@@ -17,9 +17,13 @@ spec:
         app: backend
 
     spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+
       containers:
         - name: backend
-          image: deviliam/ecs-backend:1.1
+          image: ghcr.io/devendra-5470/hireflow-backend:19e2f5878e2768560dcecf6273562dd4c5ac730b
+          imagePullPolicy: IfNotPresent
 
           ports:
             - containerPort: 3000
@@ -35,7 +39,25 @@ spec:
               value: "3000"
 
             - name: NODE_ENV
-              value: "development"
+              value: "production"
 
             - name: CORS_ORIGIN
               value: "*"
+
+          readinessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+
+          livenessProbe:
+            httpGet:
+              path: /api/health
+              port: 3000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3

@@ -6,6 +6,7 @@ metadata:
 
 spec:
   replicas: 2
+
   selector:
     matchLabels:
       app: frontend
@@ -16,12 +17,17 @@ spec:
         app: frontend
 
     spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+
       containers:
         - name: frontend
-          image: deviliam/ecs-frontend:1.1
+          image: ghcr.io/devendra-5470/hireflow-frontend:19e2f5878e2768560dcecf6273562dd4c5ac730b
+          imagePullPolicy: IfNotPresent
+
           ports:
             - containerPort: 80
-            
+
           resources:
             requests:
               cpu: "100m"
