@@ -17,6 +17,9 @@ spec:
         app: frontend
 
     spec:
+      imagePullSecrets:
+        - name: ghcr-secret
+
       containers:
         - name: frontend
           image: ghcr.io/devendra-5470/hireflow-frontend:19e2f5878e2768560dcecf6273562dd4c5ac730b
