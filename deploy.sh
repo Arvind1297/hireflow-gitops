@@ -8,16 +8,19 @@ set -Eeuo pipefail
 
 NAMESPACE="hireflow"
 
+LOCAL_PATH_MANIFEST="https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml"
+STORAGE_CLASS="local-path"
+
 FILES=(
-  "namespace.yaml"
-  "database-pvc.yaml"
-  "database-deployment.yaml"
-  "database-service.yaml"
-  "backend-deployment.yaml"
-  "backend-service.yaml"
-  "frontend-deployment.yaml"
-  "frontend-service.yaml"
-  "ingress.yaml"
+    "namespace.yaml"
+    "database-pvc.yaml"
+    "database-deployment.yaml"
+    "database-service.yaml"
+    "backend-deployment.yaml"
+    "backend-service.yaml"
+    "frontend-deployment.yaml"
+    "frontend-service.yaml"
+    "ingress.yaml"
 )
 
 CURRENT_STEP="initialization"
@@ -67,12 +70,16 @@ on_error() {
     echo
 
     echo "========================================================="
-    echo "Current Kubernetes Status"
+    echo "Kubernetes Diagnostics"
     echo "========================================================="
 
     echo
     echo "Nodes:"
     kubectl get nodes -o wide 2>/dev/null || true
+
+    echo
+    echo "StorageClasses:"
+    kubectl get storageclass 2>/dev/null || true
 
     echo
     echo "Pods:"
@@ -147,7 +154,22 @@ fi
 success "Kubernetes cluster is reachable."
 
 # =========================================================
-# 3. Check Manifest Files
+# 3. Check Nodes
+# =========================================================
+
+CURRENT_STEP="checking Kubernetes nodes"
+
+log "Checking Kubernetes nodes..."
+
+if ! kubectl get nodes >/dev/null 2>&1; then
+    fail "Unable to read Kubernetes nodes."
+    exit 1
+fi
+
+kubectl get nodes -o wide
+
+# =========================================================
+# 4. Check Manifest Files
 # =========================================================
 
 CURRENT_STEP="checking manifest files"
@@ -166,13 +188,7 @@ for file in "${FILES[@]}"; do
 done
 
 # =========================================================
-# 4. Create Namespace FIRST
-# =========================================================
-#
-# IMPORTANT:
-# Namespaced resources cannot be server-side validated
-# before the namespace exists.
-#
+# 5. Create Namespace
 # =========================================================
 
 CURRENT_STEP="creating namespace"
@@ -186,18 +202,83 @@ if kubectl wait \
     "namespace/${NAMESPACE}" \
     --timeout=60s >/dev/null 2>&1
 then
-
     success "Namespace ${NAMESPACE} is ready."
+else
+    fail "Namespace ${NAMESPACE} did not become ready."
+    exit 1
+fi
+
+# =========================================================
+# 6. Install / Verify Local Path Provisioner
+# =========================================================
+
+CURRENT_STEP="checking local-path storage provisioner"
+
+log "Checking StorageClass ${STORAGE_CLASS}..."
+
+if kubectl get storageclass "${STORAGE_CLASS}" >/dev/null 2>&1; then
+
+    success "StorageClass ${STORAGE_CLASS} already exists."
 
 else
 
-    fail "Namespace ${NAMESPACE} did not become ready."
+    warn "StorageClass ${STORAGE_CLASS} not found."
+    log "Installing Rancher Local Path Provisioner..."
+
+    kubectl apply -f "${LOCAL_PATH_MANIFEST}"
+
+    success "Local Path Provisioner manifest applied."
+
+fi
+
+# =========================================================
+# 7. Wait for Local Path Provisioner
+# =========================================================
+
+CURRENT_STEP="waiting for local-path provisioner"
+
+log "Waiting for Local Path Provisioner..."
+
+if kubectl wait \
+    --for=condition=available \
+    deployment/local-path-provisioner \
+    -n local-path-storage \
+    --timeout=180s >/dev/null 2>&1
+then
+
+    success "Local Path Provisioner is ready."
+
+else
+
+    fail "Local Path Provisioner did not become ready."
+
+    kubectl get pods \
+        -n local-path-storage \
+        -o wide || true
+
     exit 1
 
 fi
 
 # =========================================================
-# 5. Validate Remaining Manifests
+# 8. Verify StorageClass
+# =========================================================
+
+CURRENT_STEP="verifying storage class"
+
+log "Verifying StorageClass ${STORAGE_CLASS}..."
+
+if ! kubectl get storageclass "${STORAGE_CLASS}" >/dev/null 2>&1; then
+
+    fail "StorageClass ${STORAGE_CLASS} is still unavailable."
+    exit 1
+
+fi
+
+success "StorageClass ${STORAGE_CLASS} is available."
+
+# =========================================================
+# 9. Validate Kubernetes Manifests
 # =========================================================
 
 CURRENT_STEP="validating Kubernetes manifests"
@@ -224,6 +305,7 @@ for file in "${VALIDATION_FILES[@]}"; do
 
         fail "Invalid Kubernetes manifest: ${file}"
         exit 1
+
     fi
 
     success "Validated ${file}"
@@ -231,7 +313,7 @@ for file in "${VALIDATION_FILES[@]}"; do
 done
 
 # =========================================================
-# 6. Database PVC
+# 10. Database PVC
 # =========================================================
 
 CURRENT_STEP="creating database PVC"
@@ -242,11 +324,39 @@ kubectl apply -f database-pvc.yaml
 
 success "Database PVC created/updated."
 
-log "Waiting for database PVC..."
+# =========================================================
+# 11. Database Deployment
+# =========================================================
+
+CURRENT_STEP="deploying database"
+
+log "Deploying database..."
+
+kubectl apply -f database-deployment.yaml
+
+success "Database Deployment created/updated."
+
+# =========================================================
+# 12. Wait for Database PVC
+# =========================================================
+#
+# IMPORTANT:
+#
+# local-path normally uses WaitForFirstConsumer.
+# Therefore PVC may stay Pending until the database
+# Pod is scheduled.
+#
+# We deploy the database BEFORE waiting for Bound.
+#
+# =========================================================
+
+CURRENT_STEP="waiting for database PVC"
+
+log "Waiting for database PVC to become Bound..."
 
 PVC_READY=false
 
-for i in {1..60}; do
+for i in {1..90}; do
 
     PVC_STATUS=$(
         kubectl get pvc database-pvc \
@@ -272,6 +382,7 @@ for i in {1..60}; do
             -n "${NAMESPACE}" || true
 
         exit 1
+
     fi
 
     echo "  PVC status: ${PVC_STATUS:-Pending}"
@@ -282,37 +393,55 @@ done
 
 if [[ "${PVC_READY}" != true ]]; then
 
-    fail "Database PVC did not become Bound within 120 seconds."
+    fail "Database PVC did not become Bound within 180 seconds."
 
+    echo
+    echo "PVC details:"
     kubectl describe pvc \
         database-pvc \
         -n "${NAMESPACE}" || true
+
+    echo
+    echo "Database pods:"
+    kubectl get pods \
+        -n "${NAMESPACE}" \
+        -l app=database \
+        -o wide || true
 
     exit 1
 
 fi
 
 # =========================================================
-# 7. Database Deployment
+# 13. Wait for Database
 # =========================================================
 
-CURRENT_STEP="deploying database"
-
-log "Deploying database..."
-
-kubectl apply -f database-deployment.yaml
+CURRENT_STEP="waiting for database rollout"
 
 log "Waiting for database rollout..."
 
-kubectl rollout status \
+if kubectl rollout status \
     deployment/database \
     -n "${NAMESPACE}" \
     --timeout=180s
+then
 
-success "Database is ready."
+    success "Database is ready."
+
+else
+
+    fail "Database rollout failed."
+
+    kubectl get pods \
+        -n "${NAMESPACE}" \
+        -o wide || true
+
+    exit 1
+
+fi
 
 # =========================================================
-# 8. Database Service
+# 14. Database Service
 # =========================================================
 
 CURRENT_STEP="creating database service"
@@ -324,7 +453,7 @@ kubectl apply -f database-service.yaml
 success "Database service is ready."
 
 # =========================================================
-# 9. Backend Deployment
+# 15. Backend Deployment
 # =========================================================
 
 CURRENT_STEP="deploying backend"
@@ -333,17 +462,38 @@ log "Deploying backend..."
 
 kubectl apply -f backend-deployment.yaml
 
+success "Backend Deployment created/updated."
+
+# =========================================================
+# 16. Backend Rollout
+# =========================================================
+
+CURRENT_STEP="waiting for backend rollout"
+
 log "Waiting for backend rollout..."
 
-kubectl rollout status \
+if kubectl rollout status \
     deployment/backend \
     -n "${NAMESPACE}" \
     --timeout=180s
+then
 
-success "Backend is ready."
+    success "Backend is ready."
+
+else
+
+    fail "Backend rollout failed."
+
+    kubectl get pods \
+        -n "${NAMESPACE}" \
+        -o wide || true
+
+    exit 1
+
+fi
 
 # =========================================================
-# 10. Backend Service
+# 17. Backend Service
 # =========================================================
 
 CURRENT_STEP="creating backend service"
@@ -355,7 +505,7 @@ kubectl apply -f backend-service.yaml
 success "Backend service is ready."
 
 # =========================================================
-# 11. Frontend Deployment
+# 18. Frontend Deployment
 # =========================================================
 
 CURRENT_STEP="deploying frontend"
@@ -364,17 +514,38 @@ log "Deploying frontend..."
 
 kubectl apply -f frontend-deployment.yaml
 
+success "Frontend Deployment created/updated."
+
+# =========================================================
+# 19. Frontend Rollout
+# =========================================================
+
+CURRENT_STEP="waiting for frontend rollout"
+
 log "Waiting for frontend rollout..."
 
-kubectl rollout status \
+if kubectl rollout status \
     deployment/frontend \
     -n "${NAMESPACE}" \
     --timeout=180s
+then
 
-success "Frontend is ready."
+    success "Frontend is ready."
+
+else
+
+    fail "Frontend rollout failed."
+
+    kubectl get pods \
+        -n "${NAMESPACE}" \
+        -o wide || true
+
+    exit 1
+
+fi
 
 # =========================================================
-# 12. Frontend Service
+# 20. Frontend Service
 # =========================================================
 
 CURRENT_STEP="creating frontend service"
@@ -386,7 +557,7 @@ kubectl apply -f frontend-service.yaml
 success "Frontend service is ready."
 
 # =========================================================
-# 13. Ingress
+# 21. Ingress
 # =========================================================
 
 CURRENT_STEP="creating ingress"
@@ -398,17 +569,52 @@ kubectl apply -f ingress.yaml
 success "Ingress is created."
 
 # =========================================================
-# 14. Final Status
+# 22. Final Pod Health Check
+# =========================================================
+
+CURRENT_STEP="checking final application health"
+
+log "Checking application pods..."
+
+if kubectl wait \
+    --for=condition=Ready \
+    pods \
+    -n "${NAMESPACE}" \
+    --all \
+    --timeout=180s
+then
+
+    success "All application pods are Ready."
+
+else
+
+    warn "Not all application pods became Ready."
+
+    kubectl get pods \
+        -n "${NAMESPACE}" \
+        -o wide
+
+    fail "Application health check failed."
+    exit 1
+
+fi
+
+# =========================================================
+# 23. Final Status
 # =========================================================
 
 echo
 echo "========================================================="
-echo "                DEPLOYMENT COMPLETE"
+echo "             DEPLOYMENT COMPLETE"
 echo "========================================================="
 echo
 
 echo "Namespace:"
 kubectl get namespace "${NAMESPACE}"
+
+echo
+echo "StorageClass:"
+kubectl get storageclass "${STORAGE_CLASS}"
 
 echo
 echo "Pods:"
@@ -432,5 +638,7 @@ kubectl get ingress \
     -n "${NAMESPACE}"
 
 echo
+echo "========================================================="
 success "HireFlow deployment completed successfully."
+echo "========================================================="
 echo
