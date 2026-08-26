@@ -2,10 +2,6 @@
 
 set -Eeuo pipefail
 
-# =========================================================
-# HireFlow Kubernetes Deployment
-# =========================================================
-
 NAMESPACE="hireflow"
 
 LOCAL_PATH_MANIFEST="https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml"
@@ -25,19 +21,11 @@ FILES=(
 
 CURRENT_STEP="initialization"
 
-# =========================================================
-# Colors
-# =========================================================
-
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m'
-
-# =========================================================
-# Logging
-# =========================================================
 
 log() {
     echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $*"
@@ -55,9 +43,66 @@ fail() {
     echo -e "${RED}✗ $*${NC}"
 }
 
-# =========================================================
-# Error Handler
-# =========================================================
+show_diagnostics() {
+    echo
+    echo "========================================================="
+    echo "                 KUBERNETES DIAGNOSTICS"
+    echo "========================================================="
+
+    echo
+    echo ">>> Nodes"
+    kubectl get nodes -o wide 2>/dev/null || true
+
+    echo
+    echo ">>> StorageClasses"
+    kubectl get storageclass 2>/dev/null || true
+
+    echo
+    echo ">>> Local Path Provisioner"
+    kubectl get pods \
+        -n local-path-storage \
+        -o wide 2>/dev/null || true
+
+    echo
+    echo ">>> Application Pods"
+    kubectl get pods \
+        -n "${NAMESPACE}" \
+        -o wide 2>/dev/null || true
+
+    echo
+    echo ">>> Deployments"
+    kubectl get deployments \
+        -n "${NAMESPACE}" 2>/dev/null || true
+
+    echo
+    echo ">>> ReplicaSets"
+    kubectl get rs \
+        -n "${NAMESPACE}" 2>/dev/null || true
+
+    echo
+    echo ">>> Services"
+    kubectl get svc \
+        -n "${NAMESPACE}" 2>/dev/null || true
+
+    echo
+    echo ">>> PVC"
+    kubectl get pvc \
+        -n "${NAMESPACE}" 2>/dev/null || true
+
+    echo
+    echo ">>> Ingress"
+    kubectl get ingress \
+        -n "${NAMESPACE}" 2>/dev/null || true
+
+    echo
+    echo ">>> Recent Events"
+    kubectl get events \
+        -n "${NAMESPACE}" \
+        --sort-by='.lastTimestamp' 2>/dev/null \
+        | tail -40 || true
+
+    echo
+}
 
 on_error() {
     local exit_code=$?
@@ -67,42 +112,9 @@ on_error() {
     echo
     echo "Failed step : ${CURRENT_STEP}"
     echo "Exit code   : ${exit_code}"
-    echo
 
-    echo "========================================================="
-    echo "Kubernetes Diagnostics"
-    echo "========================================================="
+    show_diagnostics
 
-    echo
-    echo "Nodes:"
-    kubectl get nodes -o wide 2>/dev/null || true
-
-    echo
-    echo "StorageClasses:"
-    kubectl get storageclass 2>/dev/null || true
-
-    echo
-    echo "Pods:"
-    kubectl get pods \
-        -n "${NAMESPACE}" \
-        -o wide 2>/dev/null || true
-
-    echo
-    echo "Services:"
-    kubectl get svc \
-        -n "${NAMESPACE}" 2>/dev/null || true
-
-    echo
-    echo "PVC:"
-    kubectl get pvc \
-        -n "${NAMESPACE}" 2>/dev/null || true
-
-    echo
-    echo "Ingress:"
-    kubectl get ingress \
-        -n "${NAMESPACE}" 2>/dev/null || true
-
-    echo
     fail "Fix the problem and run the script again."
 
     exit "${exit_code}"
@@ -110,19 +122,11 @@ on_error() {
 
 trap on_error ERR
 
-# =========================================================
-# Header
-# =========================================================
-
 echo
 echo "========================================================="
-echo "        HireFlow Kubernetes Deployment"
+echo "              HireFlow Kubernetes Deployment"
 echo "========================================================="
 echo
-
-# =========================================================
-# 1. Check kubectl
-# =========================================================
 
 CURRENT_STEP="checking kubectl"
 
@@ -133,63 +137,59 @@ fi
 
 success "kubectl found."
 
-# =========================================================
-# 2. Kubernetes Connectivity
-# =========================================================
-
 CURRENT_STEP="checking Kubernetes connection"
 
 log "Checking Kubernetes cluster..."
 
 if ! kubectl cluster-info >/dev/null 2>&1; then
     fail "Cannot connect to Kubernetes cluster."
-
     echo
     echo "Run:"
     echo "  kubectl get nodes"
-
     exit 1
 fi
 
 success "Kubernetes cluster is reachable."
 
-# =========================================================
-# 3. Check Nodes
-# =========================================================
-
 CURRENT_STEP="checking Kubernetes nodes"
 
 log "Checking Kubernetes nodes..."
 
-if ! kubectl get nodes >/dev/null 2>&1; then
-    fail "Unable to read Kubernetes nodes."
+NODE_COUNT=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+
+if [[ "${NODE_COUNT}" -eq 0 ]]; then
+    fail "No Kubernetes nodes found."
     exit 1
 fi
 
-kubectl get nodes -o wide
+NOT_READY_NODES=$(
+    kubectl get nodes \
+        --no-headers 2>/dev/null \
+        | awk '$2 != "Ready" {print $1}'
+)
 
-# =========================================================
-# 4. Check Manifest Files
-# =========================================================
+if [[ -n "${NOT_READY_NODES}" ]]; then
+    fail "Some Kubernetes nodes are not Ready:"
+    echo "${NOT_READY_NODES}"
+    exit 1
+fi
+
+success "All Kubernetes nodes are Ready."
+
+kubectl get nodes -o wide
 
 CURRENT_STEP="checking manifest files"
 
 log "Checking manifest files..."
 
 for file in "${FILES[@]}"; do
-
     if [[ ! -f "${file}" ]]; then
         fail "Missing file: ${file}"
         exit 1
     fi
 
     success "Found ${file}"
-
 done
-
-# =========================================================
-# 5. Create Namespace
-# =========================================================
 
 CURRENT_STEP="creating namespace"
 
@@ -208,32 +208,21 @@ else
     exit 1
 fi
 
-# =========================================================
-# 6. Install / Verify Local Path Provisioner
-# =========================================================
-
 CURRENT_STEP="checking local-path storage provisioner"
 
 log "Checking StorageClass ${STORAGE_CLASS}..."
 
 if kubectl get storageclass "${STORAGE_CLASS}" >/dev/null 2>&1; then
-
     success "StorageClass ${STORAGE_CLASS} already exists."
-
 else
-
     warn "StorageClass ${STORAGE_CLASS} not found."
+
     log "Installing Rancher Local Path Provisioner..."
 
     kubectl apply -f "${LOCAL_PATH_MANIFEST}"
 
     success "Local Path Provisioner manifest applied."
-
 fi
-
-# =========================================================
-# 7. Wait for Local Path Provisioner
-# =========================================================
 
 CURRENT_STEP="waiting for local-path provisioner"
 
@@ -245,11 +234,8 @@ if kubectl wait \
     -n local-path-storage \
     --timeout=180s >/dev/null 2>&1
 then
-
     success "Local Path Provisioner is ready."
-
 else
-
     fail "Local Path Provisioner did not become ready."
 
     kubectl get pods \
@@ -257,29 +243,20 @@ else
         -o wide || true
 
     exit 1
-
 fi
-
-# =========================================================
-# 8. Verify StorageClass
-# =========================================================
 
 CURRENT_STEP="verifying storage class"
 
 log "Verifying StorageClass ${STORAGE_CLASS}..."
 
 if ! kubectl get storageclass "${STORAGE_CLASS}" >/dev/null 2>&1; then
-
-    fail "StorageClass ${STORAGE_CLASS} is still unavailable."
+    fail "StorageClass ${STORAGE_CLASS} is unavailable."
     exit 1
-
 fi
 
 success "StorageClass ${STORAGE_CLASS} is available."
 
-# =========================================================
-# 9. Validate Kubernetes Manifests
-# =========================================================
+kubectl get storageclass "${STORAGE_CLASS}"
 
 CURRENT_STEP="validating Kubernetes manifests"
 
@@ -297,24 +274,16 @@ VALIDATION_FILES=(
 )
 
 for file in "${VALIDATION_FILES[@]}"; do
-
     if ! kubectl apply \
         --dry-run=server \
         -f "${file}" >/dev/null
     then
-
         fail "Invalid Kubernetes manifest: ${file}"
         exit 1
-
     fi
 
     success "Validated ${file}"
-
 done
-
-# =========================================================
-# 10. Database PVC
-# =========================================================
 
 CURRENT_STEP="creating database PVC"
 
@@ -324,10 +293,6 @@ kubectl apply -f database-pvc.yaml
 
 success "Database PVC created/updated."
 
-# =========================================================
-# 11. Database Deployment
-# =========================================================
-
 CURRENT_STEP="deploying database"
 
 log "Deploying database..."
@@ -336,19 +301,101 @@ kubectl apply -f database-deployment.yaml
 
 success "Database Deployment created/updated."
 
-# =========================================================
-# 12. Wait for Database PVC
-# =========================================================
-#
-# IMPORTANT:
-#
-# local-path normally uses WaitForFirstConsumer.
-# Therefore PVC may stay Pending until the database
-# Pod is scheduled.
-#
-# We deploy the database BEFORE waiting for Bound.
-#
-# =========================================================
+CURRENT_STEP="checking database ReplicaSet"
+
+log "Checking database ReplicaSet..."
+
+DB_RS_READY=false
+
+for i in {1..30}; do
+    DB_RS_COUNT=$(
+        kubectl get rs \
+            -n "${NAMESPACE}" \
+            -l app=database \
+            --no-headers 2>/dev/null \
+            | wc -l
+    )
+
+    if [[ "${DB_RS_COUNT}" -gt 0 ]]; then
+        DB_RS_READY=true
+        break
+    fi
+
+    sleep 2
+done
+
+if [[ "${DB_RS_READY}" != true ]]; then
+    fail "Database ReplicaSet was not created."
+
+    echo
+    echo "Database Deployment:"
+    kubectl describe deployment database \
+        -n "${NAMESPACE}" || true
+
+    echo
+    echo "Recent events:"
+    kubectl get events \
+        -n "${NAMESPACE}" \
+        --sort-by='.lastTimestamp' \
+        | tail -30 || true
+
+    exit 1
+fi
+
+success "Database ReplicaSet exists."
+
+CURRENT_STEP="waiting for database pod"
+
+log "Waiting for database Pod to be created..."
+
+DB_POD_FOUND=false
+
+for i in {1..30}; do
+    DB_POD_COUNT=$(
+        kubectl get pods \
+            -n "${NAMESPACE}" \
+            -l app=database \
+            --no-headers 2>/dev/null \
+            | wc -l
+    )
+
+    if [[ "${DB_POD_COUNT}" -gt 0 ]]; then
+        DB_POD_FOUND=true
+        break
+    fi
+
+    sleep 2
+done
+
+if [[ "${DB_POD_FOUND}" != true ]]; then
+    fail "Database Pod was not created."
+
+    echo
+    echo "Database Deployment:"
+    kubectl describe deployment database \
+        -n "${NAMESPACE}" || true
+
+    echo
+    echo "ReplicaSets:"
+    kubectl get rs \
+        -n "${NAMESPACE}" || true
+
+    echo
+    echo "Recent events:"
+    kubectl get events \
+        -n "${NAMESPACE}" \
+        --sort-by='.lastTimestamp' \
+        | tail -40 || true
+
+    exit 1
+fi
+
+success "Database Pod was created."
+
+kubectl get pods \
+    -n "${NAMESPACE}" \
+    -l app=database \
+    -o wide
 
 CURRENT_STEP="waiting for database PVC"
 
@@ -357,7 +404,6 @@ log "Waiting for database PVC to become Bound..."
 PVC_READY=false
 
 for i in {1..90}; do
-
     PVC_STATUS=$(
         kubectl get pvc database-pvc \
             -n "${NAMESPACE}" \
@@ -366,15 +412,12 @@ for i in {1..90}; do
     )
 
     if [[ "${PVC_STATUS}" == "Bound" ]]; then
-
         success "Database PVC is Bound."
         PVC_READY=true
         break
-
     fi
 
     if [[ "${PVC_STATUS}" == "Lost" ]]; then
-
         fail "Database PVC entered Lost state."
 
         kubectl describe pvc \
@@ -382,39 +425,82 @@ for i in {1..90}; do
             -n "${NAMESPACE}" || true
 
         exit 1
+    fi
 
+    DB_POD_NAME=$(
+        kubectl get pods \
+            -n "${NAMESPACE}" \
+            -l app=database \
+            -o jsonpath='{.items[0].metadata.name}' \
+            2>/dev/null || true
+    )
+
+    if [[ -n "${DB_POD_NAME}" ]]; then
+        POD_PHASE=$(
+            kubectl get pod "${DB_POD_NAME}" \
+                -n "${NAMESPACE}" \
+                -o jsonpath='{.status.phase}' \
+                2>/dev/null || true
+        )
+
+        if [[ "${POD_PHASE}" == "Failed" ]]; then
+            fail "Database Pod entered Failed state."
+
+            kubectl describe pod \
+                "${DB_POD_NAME}" \
+                -n "${NAMESPACE}" || true
+
+            exit 1
+        fi
     fi
 
     echo "  PVC status: ${PVC_STATUS:-Pending}"
 
     sleep 2
-
 done
 
 if [[ "${PVC_READY}" != true ]]; then
-
     fail "Database PVC did not become Bound within 180 seconds."
 
     echo
-    echo "PVC details:"
+    echo "PVC:"
     kubectl describe pvc \
         database-pvc \
         -n "${NAMESPACE}" || true
 
     echo
-    echo "Database pods:"
+    echo "Database Pod:"
     kubectl get pods \
         -n "${NAMESPACE}" \
         -l app=database \
         -o wide || true
 
+    echo
+    echo "Database Pod details:"
+
+    DB_POD_NAME=$(
+        kubectl get pods \
+            -n "${NAMESPACE}" \
+            -l app=database \
+            -o jsonpath='{.items[0].metadata.name}' \
+            2>/dev/null || true
+    )
+
+    if [[ -n "${DB_POD_NAME}" ]]; then
+        kubectl describe pod \
+            "${DB_POD_NAME}" \
+            -n "${NAMESPACE}" || true
+    fi
+
+    echo
+    echo "Recent events:"
+    kubectl get events \
+        -n "${NAMESPACE}" \
+        --sort-by='.lastTimestamp' \
+        | tail -40 || true
+
     exit 1
-
 fi
-
-# =========================================================
-# 13. Wait for Database
-# =========================================================
 
 CURRENT_STEP="waiting for database rollout"
 
@@ -425,24 +511,34 @@ if kubectl rollout status \
     -n "${NAMESPACE}" \
     --timeout=180s
 then
-
     success "Database is ready."
-
 else
-
     fail "Database rollout failed."
 
-    kubectl get pods \
-        -n "${NAMESPACE}" \
-        -o wide || true
+    DB_POD_NAME=$(
+        kubectl get pods \
+            -n "${NAMESPACE}" \
+            -l app=database \
+            -o jsonpath='{.items[0].metadata.name}' \
+            2>/dev/null || true
+    )
+
+    if [[ -n "${DB_POD_NAME}" ]]; then
+        kubectl describe pod \
+            "${DB_POD_NAME}" \
+            -n "${NAMESPACE}" || true
+
+        echo
+        echo "Database logs:"
+        kubectl logs \
+            "${DB_POD_NAME}" \
+            -n "${NAMESPACE}" \
+            --all-containers=true \
+            --tail=100 || true
+    fi
 
     exit 1
-
 fi
-
-# =========================================================
-# 14. Database Service
-# =========================================================
 
 CURRENT_STEP="creating database service"
 
@@ -452,10 +548,6 @@ kubectl apply -f database-service.yaml
 
 success "Database service is ready."
 
-# =========================================================
-# 15. Backend Deployment
-# =========================================================
-
 CURRENT_STEP="deploying backend"
 
 log "Deploying backend..."
@@ -463,10 +555,6 @@ log "Deploying backend..."
 kubectl apply -f backend-deployment.yaml
 
 success "Backend Deployment created/updated."
-
-# =========================================================
-# 16. Backend Rollout
-# =========================================================
 
 CURRENT_STEP="waiting for backend rollout"
 
@@ -477,24 +565,39 @@ if kubectl rollout status \
     -n "${NAMESPACE}" \
     --timeout=180s
 then
-
     success "Backend is ready."
-
 else
-
     fail "Backend rollout failed."
 
     kubectl get pods \
         -n "${NAMESPACE}" \
+        -l app=backend \
         -o wide || true
 
+    BACKEND_POD=$(
+        kubectl get pods \
+            -n "${NAMESPACE}" \
+            -l app=backend \
+            -o jsonpath='{.items[0].metadata.name}' \
+            2>/dev/null || true
+    )
+
+    if [[ -n "${BACKEND_POD}" ]]; then
+        kubectl describe pod \
+            "${BACKEND_POD}" \
+            -n "${NAMESPACE}" || true
+
+        echo
+        echo "Backend logs:"
+        kubectl logs \
+            "${BACKEND_POD}" \
+            -n "${NAMESPACE}" \
+            --all-containers=true \
+            --tail=100 || true
+    fi
+
     exit 1
-
 fi
-
-# =========================================================
-# 17. Backend Service
-# =========================================================
 
 CURRENT_STEP="creating backend service"
 
@@ -504,10 +607,6 @@ kubectl apply -f backend-service.yaml
 
 success "Backend service is ready."
 
-# =========================================================
-# 18. Frontend Deployment
-# =========================================================
-
 CURRENT_STEP="deploying frontend"
 
 log "Deploying frontend..."
@@ -515,10 +614,6 @@ log "Deploying frontend..."
 kubectl apply -f frontend-deployment.yaml
 
 success "Frontend Deployment created/updated."
-
-# =========================================================
-# 19. Frontend Rollout
-# =========================================================
 
 CURRENT_STEP="waiting for frontend rollout"
 
@@ -529,24 +624,39 @@ if kubectl rollout status \
     -n "${NAMESPACE}" \
     --timeout=180s
 then
-
     success "Frontend is ready."
-
 else
-
     fail "Frontend rollout failed."
 
     kubectl get pods \
         -n "${NAMESPACE}" \
+        -l app=frontend \
         -o wide || true
 
+    FRONTEND_POD=$(
+        kubectl get pods \
+            -n "${NAMESPACE}" \
+            -l app=frontend \
+            -o jsonpath='{.items[0].metadata.name}' \
+            2>/dev/null || true
+    )
+
+    if [[ -n "${FRONTEND_POD}" ]]; then
+        kubectl describe pod \
+            "${FRONTEND_POD}" \
+            -n "${NAMESPACE}" || true
+
+        echo
+        echo "Frontend logs:"
+        kubectl logs \
+            "${FRONTEND_POD}" \
+            -n "${NAMESPACE}" \
+            --all-containers=true \
+            --tail=100 || true
+    fi
+
     exit 1
-
 fi
-
-# =========================================================
-# 20. Frontend Service
-# =========================================================
 
 CURRENT_STEP="creating frontend service"
 
@@ -556,9 +666,23 @@ kubectl apply -f frontend-service.yaml
 
 success "Frontend service is ready."
 
-# =========================================================
-# 21. Ingress
-# =========================================================
+CURRENT_STEP="checking ingress controller"
+
+log "Checking Kubernetes Ingress controller..."
+
+INGRESS_CLASS=$(
+    kubectl get ingressclass \
+        --no-headers 2>/dev/null \
+        | awk '{print $1}' \
+        | head -1
+)
+
+if [[ -z "${INGRESS_CLASS}" ]]; then
+    warn "No IngressClass found."
+    warn "Ingress resource will still be created, but traffic will not work until an Ingress controller is installed."
+else
+    success "IngressClass detected: ${INGRESS_CLASS}"
+fi
 
 CURRENT_STEP="creating ingress"
 
@@ -568,13 +692,9 @@ kubectl apply -f ingress.yaml
 
 success "Ingress is created."
 
-# =========================================================
-# 22. Final Pod Health Check
-# =========================================================
-
 CURRENT_STEP="checking final application health"
 
-log "Checking application pods..."
+log "Checking final application health..."
 
 if kubectl wait \
     --for=condition=Ready \
@@ -583,29 +703,27 @@ if kubectl wait \
     --all \
     --timeout=180s
 then
-
     success "All application pods are Ready."
-
 else
-
-    warn "Not all application pods became Ready."
+    fail "Not all application pods became Ready."
 
     kubectl get pods \
         -n "${NAMESPACE}" \
         -o wide
 
-    fail "Application health check failed."
+    echo
+    echo "Recent events:"
+    kubectl get events \
+        -n "${NAMESPACE}" \
+        --sort-by='.lastTimestamp' \
+        | tail -40 || true
+
     exit 1
-
 fi
-
-# =========================================================
-# 23. Final Status
-# =========================================================
 
 echo
 echo "========================================================="
-echo "             DEPLOYMENT COMPLETE"
+echo "                 DEPLOYMENT COMPLETE"
 echo "========================================================="
 echo
 
@@ -621,6 +739,11 @@ echo "Pods:"
 kubectl get pods \
     -n "${NAMESPACE}" \
     -o wide
+
+echo
+echo "Deployments:"
+kubectl get deployments \
+    -n "${NAMESPACE}"
 
 echo
 echo "Services:"
