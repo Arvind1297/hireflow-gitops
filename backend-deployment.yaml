@@ -32,6 +32,12 @@ spec:
                   name: database-secret
                   key: DATABASE_URL
 
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: database-secret
+                  key: JWT_SECRET
+
             - name: DB_SSL
               value: "false"
 
