@@ -17,7 +17,7 @@ FILES=(
   "backend-service.yaml"
   "frontend-deployment.yaml"
   "frontend-service.yaml"
-  "frontend-ingress.yaml"
+  "ingress.yaml"
 )
 
 CURRENT_STEP="initialization"
@@ -67,29 +67,39 @@ on_error() {
   echo
 
   echo "Current Kubernetes status:"
-  kubectl get pods -n "${NAMESPACE}" -o wide 2>/dev/null || true
+
+  kubectl get pods \
+    -n "${NAMESPACE}" \
+    -o wide 2>/dev/null || true
 
   echo
   echo "Services:"
-  kubectl get svc -n "${NAMESPACE}" 2>/dev/null || true
+
+  kubectl get svc \
+    -n "${NAMESPACE}" 2>/dev/null || true
 
   echo
   echo "PVC:"
-  kubectl get pvc -n "${NAMESPACE}" 2>/dev/null || true
+
+  kubectl get pvc \
+    -n "${NAMESPACE}" 2>/dev/null || true
 
   echo
   echo "Ingress:"
-  kubectl get ingress -n "${NAMESPACE}" 2>/dev/null || true
+
+  kubectl get ingress \
+    -n "${NAMESPACE}" 2>/dev/null || true
 
   echo
   fail "Fix the problem and run the script again."
+
   exit "${exit_code}"
 }
 
 trap on_error ERR
 
 # =========================================================
-# Preflight
+# Header
 # =========================================================
 
 echo
@@ -97,6 +107,10 @@ echo "========================================================="
 echo "        HireFlow Kubernetes Deployment"
 echo "========================================================="
 echo
+
+# =========================================================
+# Check kubectl
+# =========================================================
 
 CURRENT_STEP="checking kubectl"
 
@@ -118,7 +132,7 @@ log "Checking Kubernetes cluster..."
 if ! kubectl cluster-info >/dev/null 2>&1; then
   fail "Cannot connect to Kubernetes cluster."
   echo
-  echo "Check:"
+  echo "Run:"
   echo "  kubectl get nodes"
   exit 1
 fi
@@ -126,7 +140,7 @@ fi
 success "Kubernetes cluster is reachable."
 
 # =========================================================
-# Check all files
+# Check manifest files
 # =========================================================
 
 CURRENT_STEP="checking manifest files"
@@ -134,12 +148,14 @@ CURRENT_STEP="checking manifest files"
 log "Checking manifest files..."
 
 for file in "${FILES[@]}"; do
+
   if [[ ! -f "${file}" ]]; then
     fail "Missing file: ${file}"
     exit 1
   fi
 
   success "Found ${file}"
+
 done
 
 # =========================================================
@@ -158,9 +174,11 @@ for file in "${FILES[@]}"; do
 
     fail "Invalid Kubernetes manifest: ${file}"
     exit 1
+
   fi
 
   success "Validated ${file}"
+
 done
 
 # =========================================================
@@ -175,7 +193,7 @@ kubectl apply -f namespace.yaml
 
 if kubectl wait \
     --for=jsonpath='{.status.phase}'=Active \
-    namespace/"${NAMESPACE}" \
+    "namespace/${NAMESPACE}" \
     --timeout=60s >/dev/null 2>&1; then
 
   success "Namespace ${NAMESPACE} is ready."
@@ -203,9 +221,12 @@ log "Waiting for database PVC..."
 
 for i in {1..60}; do
 
-  PVC_STATUS=$(kubectl get pvc database-pvc \
-    -n "${NAMESPACE}" \
-    -o jsonpath='{.status.phase}' 2>/dev/null || true)
+  PVC_STATUS=$(
+    kubectl get pvc database-pvc \
+      -n "${NAMESPACE}" \
+      -o jsonpath='{.status.phase}' \
+      2>/dev/null || true
+  )
 
   if [[ "${PVC_STATUS}" == "Bound" ]]; then
     success "Database PVC is Bound."
@@ -218,11 +239,17 @@ for i in {1..60}; do
   fi
 
   echo "  PVC status: ${PVC_STATUS:-Pending}"
+
   sleep 2
 
   if [[ "${i}" == "60" ]]; then
+
     fail "Database PVC did not become Bound within 120 seconds."
-    kubectl describe pvc database-pvc -n "${NAMESPACE}" || true
+
+    kubectl describe pvc \
+      database-pvc \
+      -n "${NAMESPACE}" || true
+
     exit 1
   fi
 
@@ -325,13 +352,13 @@ success "Frontend service is ready."
 # 9. Ingress
 # =========================================================
 
-CURRENT_STEP="creating  ingress"
+CURRENT_STEP="creating ingress"
 
-log "Creating  ingress..."
+log "Creating ingress..."
 
 kubectl apply -f ingress.yaml
 
-success "ingress is created."
+success "Ingress is created."
 
 # =========================================================
 # Final Status
@@ -348,19 +375,24 @@ kubectl get namespace "${NAMESPACE}"
 
 echo
 echo "Pods:"
-kubectl get pods -n "${NAMESPACE}" -o wide
+kubectl get pods \
+  -n "${NAMESPACE}" \
+  -o wide
 
 echo
 echo "Services:"
-kubectl get svc -n "${NAMESPACE}"
+kubectl get svc \
+  -n "${NAMESPACE}"
 
 echo
 echo "PVC:"
-kubectl get pvc -n "${NAMESPACE}"
+kubectl get pvc \
+  -n "${NAMESPACE}"
 
 echo
 echo "Ingress:"
-kubectl get ingress -n "${NAMESPACE}"
+kubectl get ingress \
+  -n "${NAMESPACE}"
 
 echo
 success "HireFlow deployment completed successfully."
