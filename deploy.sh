@@ -3,8 +3,12 @@
 set -Eeuo pipefail
 
 NAMESPACE="hireflow"
+
 LOCAL_PATH_MANIFEST="https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml"
 STORAGE_CLASS="local-path"
+
+NGINX_INGRESS_MANIFEST="https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.13.3/deploy/static/provider/baremetal/deploy.yaml"
+INGRESS_CLASS="nginx"
 
 FILES=(
     "namespace.yaml"
@@ -68,6 +72,25 @@ show_diagnostics() {
         -o wide 2>/dev/null || true
 
     echo
+    echo ">>> NGINX Ingress Controller"
+    kubectl get deployment ingress-nginx-controller \
+        -n ingress-nginx \
+        -o wide 2>/dev/null || true
+
+    kubectl get pods \
+        -n ingress-nginx \
+        -o wide 2>/dev/null || true
+
+    echo
+    echo ">>> NGINX Services"
+    kubectl get svc \
+        -n ingress-nginx 2>/dev/null || true
+
+    echo
+    echo ">>> IngressClasses"
+    kubectl get ingressclass 2>/dev/null || true
+
+    echo
     echo ">>> Application Pods"
     kubectl get pods \
         -n "${NAMESPACE}" \
@@ -104,11 +127,18 @@ show_diagnostics() {
         -n "${NAMESPACE}" 2>/dev/null || true
 
     echo
-    echo ">>> Recent Events"
+    echo ">>> Recent Application Events"
     kubectl get events \
         -n "${NAMESPACE}" \
         --sort-by='.lastTimestamp' 2>/dev/null \
         | tail -50 || true
+
+    echo
+    echo ">>> Recent Ingress Events"
+    kubectl get events \
+        -n ingress-nginx \
+        --sort-by='.lastTimestamp' 2>/dev/null \
+        | tail -30 || true
 
     echo
 }
@@ -165,6 +195,7 @@ wait_for_pvc() {
     local status=""
 
     while (( elapsed < timeout )); do
+
         status="$(
             kubectl get pvc "${pvc_name}" \
                 -n "${NAMESPACE}" \
@@ -200,6 +231,16 @@ wait_for_deployment() {
     kubectl rollout status \
         "deployment/${deployment}" \
         -n "${NAMESPACE}" \
+        --timeout="${timeout}s"
+}
+
+wait_for_ingress_controller() {
+    local timeout="${1:-180}"
+
+    kubectl wait \
+        --namespace ingress-nginx \
+        --for=condition=Available \
+        deployment/ingress-nginx-controller \
         --timeout="${timeout}s"
 }
 
@@ -242,9 +283,11 @@ log "Checking Kubernetes cluster..."
 
 if ! kubectl cluster-info >/dev/null 2>&1; then
     fail "Cannot connect to Kubernetes cluster."
+
     echo
     echo "Run:"
     echo "  kubectl get nodes"
+
     exit 1
 fi
 
@@ -286,6 +329,7 @@ CURRENT_STEP="checking manifest files"
 log "Checking manifest files..."
 
 for file in "${FILES[@]}"; do
+
     if [[ ! -f "${file}" ]]; then
         fail "Missing file: ${file}"
         exit 1
@@ -316,15 +360,20 @@ CURRENT_STEP="checking local-path storage provisioner"
 log "Checking StorageClass ${STORAGE_CLASS}..."
 
 if kubectl get storageclass "${STORAGE_CLASS}" >/dev/null 2>&1; then
+
     success "StorageClass ${STORAGE_CLASS} already exists."
+
 else
+
     warn "StorageClass ${STORAGE_CLASS} not found."
 
     log "Installing Rancher Local Path Provisioner..."
 
-    kubectl apply -f "${LOCAL_PATH_MANIFEST}"
+    kubectl apply \
+        -f "${LOCAL_PATH_MANIFEST}"
 
     success "Local Path Provisioner manifest applied."
+
 fi
 
 CURRENT_STEP="waiting for local-path provisioner"
@@ -337,8 +386,11 @@ if kubectl wait \
     -n local-path-storage \
     --timeout=180s >/dev/null 2>&1
 then
+
     success "Local Path Provisioner is ready."
+
 else
+
     fail "Local Path Provisioner did not become ready."
 
     kubectl get deployment local-path-provisioner \
@@ -361,8 +413,11 @@ CURRENT_STEP="verifying storage class"
 log "Verifying StorageClass ${STORAGE_CLASS}..."
 
 if ! kubectl get storageclass "${STORAGE_CLASS}" >/dev/null 2>&1; then
+
     fail "StorageClass ${STORAGE_CLASS} is unavailable."
+
     exit 1
+
 fi
 
 success "StorageClass ${STORAGE_CLASS} is available."
@@ -386,16 +441,21 @@ VALIDATION_FILES=(
 )
 
 for file in "${VALIDATION_FILES[@]}"; do
+
     if ! kubectl apply \
         --dry-run=server \
         -n "${NAMESPACE}" \
         -f "${file}" >/dev/null
     then
+
         fail "Invalid Kubernetes manifest: ${file}"
+
         exit 1
+
     fi
 
     success "Validated ${file}"
+
 done
 
 CURRENT_STEP="creating database secret"
@@ -409,10 +469,15 @@ kubectl apply \
 if kubectl get secret database-secret \
     -n "${NAMESPACE}" >/dev/null 2>&1
 then
+
     success "Database Secret is available."
+
 else
+
     fail "Database Secret was not created."
+
     exit 1
+
 fi
 
 CURRENT_STEP="creating database PVC"
@@ -440,13 +505,17 @@ CURRENT_STEP="waiting for database pod"
 log "Waiting for database Pod..."
 
 if DB_POD_NAME="$(wait_for_pod "app=database" 60)"; then
+
     success "Database Pod was created."
+
 else
+
     fail "Database Pod was not created."
 
     show_resource_diagnostics "deployment" "database"
 
     exit 1
+
 fi
 
 kubectl get pods \
@@ -459,14 +528,21 @@ CURRENT_STEP="waiting for database PVC"
 log "Waiting for database PVC to become Bound..."
 
 if wait_for_pvc "database-pvc" 180; then
+
     success "Database PVC is Bound."
+
 else
+
     PVC_RESULT=$?
 
     if [[ "${PVC_RESULT}" -eq 2 ]]; then
+
         fail "Database PVC entered Lost state."
+
     else
+
         fail "Database PVC did not become Bound within 180 seconds."
+
     fi
 
     kubectl describe pvc \
@@ -484,6 +560,7 @@ else
         | tail -50 || true
 
     exit 1
+
 fi
 
 CURRENT_STEP="waiting for database rollout"
@@ -491,13 +568,17 @@ CURRENT_STEP="waiting for database rollout"
 log "Waiting for database rollout..."
 
 if wait_for_deployment "database" 180; then
+
     success "Database is ready."
+
 else
+
     fail "Database rollout failed."
 
     DB_POD_NAME="$(get_pod_by_label "app=database")"
 
     if [[ -n "${DB_POD_NAME}" ]]; then
+
         kubectl describe pod \
             "${DB_POD_NAME}" \
             -n "${NAMESPACE}" || true
@@ -510,6 +591,7 @@ else
             -n "${NAMESPACE}" \
             --all-containers=true \
             --tail=100 || true
+
     fi
 
     kubectl describe deployment \
@@ -517,6 +599,7 @@ else
         -n "${NAMESPACE}" || true
 
     exit 1
+
 fi
 
 CURRENT_STEP="creating database service"
@@ -529,15 +612,18 @@ kubectl apply \
 
 success "Database service is ready."
 
-CURRENT_STEP="checking database service"
-
 if kubectl get svc database-service \
     -n "${NAMESPACE}" >/dev/null 2>&1
 then
+
     success "Database service is available."
+
 else
+
     fail "Database service was not created."
+
     exit 1
+
 fi
 
 CURRENT_STEP="deploying backend"
@@ -555,8 +641,11 @@ CURRENT_STEP="waiting for backend rollout"
 log "Waiting for backend rollout..."
 
 if wait_for_deployment "backend" 180; then
+
     success "Backend is ready."
+
 else
+
     fail "Backend rollout failed."
 
     kubectl get pods \
@@ -567,6 +656,7 @@ else
     BACKEND_POD="$(get_pod_by_label "app=backend")"
 
     if [[ -n "${BACKEND_POD}" ]]; then
+
         kubectl describe pod \
             "${BACKEND_POD}" \
             -n "${NAMESPACE}" || true
@@ -579,9 +669,11 @@ else
             -n "${NAMESPACE}" \
             --all-containers=true \
             --tail=100 || true
+
     fi
 
     exit 1
+
 fi
 
 CURRENT_STEP="creating backend service"
@@ -597,10 +689,15 @@ success "Backend service is ready."
 if kubectl get svc backend-service \
     -n "${NAMESPACE}" >/dev/null 2>&1
 then
+
     success "Backend service is available."
+
 else
+
     fail "Backend service was not created."
+
     exit 1
+
 fi
 
 CURRENT_STEP="deploying frontend"
@@ -618,8 +715,11 @@ CURRENT_STEP="waiting for frontend rollout"
 log "Waiting for frontend rollout..."
 
 if wait_for_deployment "frontend" 180; then
+
     success "Frontend is ready."
+
 else
+
     fail "Frontend rollout failed."
 
     kubectl get pods \
@@ -630,6 +730,7 @@ else
     FRONTEND_POD="$(get_pod_by_label "app=frontend")"
 
     if [[ -n "${FRONTEND_POD}" ]]; then
+
         kubectl describe pod \
             "${FRONTEND_POD}" \
             -n "${NAMESPACE}" || true
@@ -642,9 +743,11 @@ else
             -n "${NAMESPACE}" \
             --all-containers=true \
             --tail=100 || true
+
     fi
 
     exit 1
+
 fi
 
 CURRENT_STEP="creating frontend service"
@@ -660,30 +763,109 @@ success "Frontend service is ready."
 if kubectl get svc frontend-service \
     -n "${NAMESPACE}" >/dev/null 2>&1
 then
+
     success "Frontend service is available."
+
 else
+
     fail "Frontend service was not created."
+
     exit 1
+
 fi
 
-CURRENT_STEP="checking ingress controller"
+CURRENT_STEP="installing nginx ingress controller"
 
-log "Checking Kubernetes Ingress controller..."
+log "Checking NGINX Ingress Controller..."
 
-INGRESS_CLASS_COUNT="$(
-    kubectl get ingressclass \
-        --no-headers 2>/dev/null \
-        | wc -l
-)"
+if kubectl get ingressclass "${INGRESS_CLASS}" >/dev/null 2>&1; then
 
-if [[ "${INGRESS_CLASS_COUNT}" -eq 0 ]]; then
-    warn "No IngressClass found."
-    warn "Ingress will be created, but external traffic will not work until an Ingress controller exists."
+    success "IngressClass ${INGRESS_CLASS} already exists."
+
 else
-    success "IngressClass detected."
 
-    kubectl get ingressclass
+    warn "IngressClass ${INGRESS_CLASS} not found."
+
+    log "Installing NGINX Ingress Controller..."
+
+    kubectl apply \
+        -f "${NGINX_INGRESS_MANIFEST}"
+
+    success "NGINX Ingress Controller manifest applied."
+
 fi
+
+CURRENT_STEP="waiting for nginx ingress controller"
+
+log "Waiting for NGINX Ingress Controller..."
+
+if wait_for_ingress_controller 180; then
+
+    success "NGINX Ingress Controller is ready."
+
+else
+
+    fail "NGINX Ingress Controller did not become ready."
+
+    kubectl get deployment \
+        ingress-nginx-controller \
+        -n ingress-nginx \
+        -o wide || true
+
+    kubectl get pods \
+        -n ingress-nginx \
+        -o wide || true
+
+    kubectl get svc \
+        -n ingress-nginx || true
+
+    kubectl get events \
+        -n ingress-nginx \
+        --sort-by='.lastTimestamp' \
+        | tail -50 || true
+
+    exit 1
+
+fi
+
+CURRENT_STEP="verifying nginx ingress class"
+
+log "Verifying IngressClass ${INGRESS_CLASS}..."
+
+if ! kubectl get ingressclass "${INGRESS_CLASS}" >/dev/null 2>&1; then
+
+    fail "IngressClass ${INGRESS_CLASS} was not created."
+
+    kubectl get ingressclass || true
+
+    exit 1
+
+fi
+
+success "IngressClass ${INGRESS_CLASS} is available."
+
+kubectl get ingressclass "${INGRESS_CLASS}"
+
+CURRENT_STEP="checking nginx ingress service"
+
+log "Checking NGINX Ingress Service..."
+
+if ! kubectl get svc \
+    ingress-nginx-controller \
+    -n ingress-nginx >/dev/null 2>&1
+then
+
+    fail "NGINX Ingress Controller Service was not created."
+
+    exit 1
+
+fi
+
+success "NGINX Ingress Controller Service is available."
+
+kubectl get svc \
+    ingress-nginx-controller \
+    -n ingress-nginx
 
 CURRENT_STEP="creating ingress"
 
@@ -694,6 +876,24 @@ kubectl apply \
     -f ingress.yaml
 
 success "Ingress is created."
+
+CURRENT_STEP="checking ingress"
+
+log "Checking frontend ingress..."
+
+if kubectl get ingress frontend-ingress \
+    -n "${NAMESPACE}" >/dev/null 2>&1
+then
+
+    success "Frontend Ingress is available."
+
+else
+
+    fail "Frontend Ingress was not created."
+
+    exit 1
+
+fi
 
 CURRENT_STEP="checking final application health"
 
@@ -706,8 +906,11 @@ if kubectl wait \
     --all \
     --timeout=180s >/dev/null 2>&1
 then
+
     success "All application Pods are Ready."
+
 else
+
     fail "Not all application Pods became Ready."
 
     kubectl get pods \
@@ -723,6 +926,7 @@ else
         | tail -50 || true
 
     exit 1
+
 fi
 
 echo
@@ -737,6 +941,22 @@ kubectl get namespace "${NAMESPACE}"
 echo
 echo "StorageClass:"
 kubectl get storageclass "${STORAGE_CLASS}"
+
+echo
+echo "NGINX Ingress Controller:"
+kubectl get deployment \
+    ingress-nginx-controller \
+    -n ingress-nginx
+
+echo
+echo "IngressClass:"
+kubectl get ingressclass "${INGRESS_CLASS}"
+
+echo
+echo "NGINX Service:"
+kubectl get svc \
+    ingress-nginx-controller \
+    -n ingress-nginx
 
 echo
 echo "Secrets:"
