@@ -3,13 +3,16 @@ kind: Service
 
 metadata:
   name: database-service
+  namespace: hireflow
 
 spec:
+  type: ClusterIP
+
   selector:
     app: database
 
   ports:
-    - port: 5432
+    - name: postgres
+      port: 5432
       targetPort: 5432
-
-  type: ClusterIP
+      protocol: TCP
