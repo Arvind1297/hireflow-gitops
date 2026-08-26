@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: ghcr.io/devendra-5470/hireflow-backend:7dabc99ad9c82ce51f221c0aa8772652bde177ab
+          image: ghcr.io/devendra-5470/hireflow-backend:666e73d86117d005d3eef4bf9323b5d0f8a849f3
           imagePullPolicy: IfNotPresent
 
           ports:
