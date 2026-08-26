@@ -15,11 +15,12 @@ spec:
 
   destination:
     server: https://kubernetes.default.svc
-    namespace: default
+    namespace: hireflow
 
   syncPolicy:
     automated:
       prune: true
       selfHeal: true
+
     syncOptions:
       - CreateNamespace=false
