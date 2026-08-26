@@ -3,13 +3,14 @@ kind: PersistentVolumeClaim
 
 metadata:
   name: database-pvc
+  namespace: hireflow
 
 spec:
   accessModes:
     - ReadWriteOnce
 
+  storageClassName: local-path
+
   resources:
     requests:
       storage: 5Gi
-
-  storageClassName: gp3
