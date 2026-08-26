@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: backend
-          image: ghcr.io/devendra-5470/hireflow-backend:19e2f5878e2768560dcecf6273562dd4c5ac730b
+          image: ghcr.io/devendra-5470/hireflow-backend:NEW_COMMIT_SHA
           imagePullPolicy: IfNotPresent
 
           ports:
@@ -31,6 +31,9 @@ spec:
                 secretKeyRef:
                   name: database-secret
                   key: DATABASE_URL
+
+            - name: DB_SSL
+              value: "false"
 
             - name: PORT
               value: "3000"
