@@ -37,19 +37,19 @@ NC='\033[0m'
 # =========================================================
 
 log() {
-  echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $*"
+    echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $*"
 }
 
 success() {
-  echo -e "${GREEN}✓ $*${NC}"
+    echo -e "${GREEN}✓ $*${NC}"
 }
 
 warn() {
-  echo -e "${YELLOW}⚠ $*${NC}"
+    echo -e "${YELLOW}⚠ $*${NC}"
 }
 
 fail() {
-  echo -e "${RED}✗ $*${NC}"
+    echo -e "${RED}✗ $*${NC}"
 }
 
 # =========================================================
@@ -57,43 +57,48 @@ fail() {
 # =========================================================
 
 on_error() {
-  local exit_code=$?
+    local exit_code=$?
 
-  echo
-  fail "Deployment failed."
-  echo
-  echo "Failed step : ${CURRENT_STEP}"
-  echo "Exit code   : ${exit_code}"
-  echo
+    echo
+    fail "Deployment failed."
+    echo
+    echo "Failed step : ${CURRENT_STEP}"
+    echo "Exit code   : ${exit_code}"
+    echo
 
-  echo "Current Kubernetes status:"
+    echo "========================================================="
+    echo "Current Kubernetes Status"
+    echo "========================================================="
 
-  kubectl get pods \
-    -n "${NAMESPACE}" \
-    -o wide 2>/dev/null || true
+    echo
+    echo "Nodes:"
+    kubectl get nodes -o wide 2>/dev/null || true
 
-  echo
-  echo "Services:"
+    echo
+    echo "Pods:"
+    kubectl get pods \
+        -n "${NAMESPACE}" \
+        -o wide 2>/dev/null || true
 
-  kubectl get svc \
-    -n "${NAMESPACE}" 2>/dev/null || true
+    echo
+    echo "Services:"
+    kubectl get svc \
+        -n "${NAMESPACE}" 2>/dev/null || true
 
-  echo
-  echo "PVC:"
+    echo
+    echo "PVC:"
+    kubectl get pvc \
+        -n "${NAMESPACE}" 2>/dev/null || true
 
-  kubectl get pvc \
-    -n "${NAMESPACE}" 2>/dev/null || true
+    echo
+    echo "Ingress:"
+    kubectl get ingress \
+        -n "${NAMESPACE}" 2>/dev/null || true
 
-  echo
-  echo "Ingress:"
+    echo
+    fail "Fix the problem and run the script again."
 
-  kubectl get ingress \
-    -n "${NAMESPACE}" 2>/dev/null || true
-
-  echo
-  fail "Fix the problem and run the script again."
-
-  exit "${exit_code}"
+    exit "${exit_code}"
 }
 
 trap on_error ERR
@@ -109,20 +114,20 @@ echo "========================================================="
 echo
 
 # =========================================================
-# Check kubectl
+# 1. Check kubectl
 # =========================================================
 
 CURRENT_STEP="checking kubectl"
 
 if ! command -v kubectl >/dev/null 2>&1; then
-  fail "kubectl is not installed."
-  exit 1
+    fail "kubectl is not installed."
+    exit 1
 fi
 
 success "kubectl found."
 
 # =========================================================
-# Kubernetes connectivity
+# 2. Kubernetes Connectivity
 # =========================================================
 
 CURRENT_STEP="checking Kubernetes connection"
@@ -130,17 +135,19 @@ CURRENT_STEP="checking Kubernetes connection"
 log "Checking Kubernetes cluster..."
 
 if ! kubectl cluster-info >/dev/null 2>&1; then
-  fail "Cannot connect to Kubernetes cluster."
-  echo
-  echo "Run:"
-  echo "  kubectl get nodes"
-  exit 1
+    fail "Cannot connect to Kubernetes cluster."
+
+    echo
+    echo "Run:"
+    echo "  kubectl get nodes"
+
+    exit 1
 fi
 
 success "Kubernetes cluster is reachable."
 
 # =========================================================
-# Check manifest files
+# 3. Check Manifest Files
 # =========================================================
 
 CURRENT_STEP="checking manifest files"
@@ -149,40 +156,23 @@ log "Checking manifest files..."
 
 for file in "${FILES[@]}"; do
 
-  if [[ ! -f "${file}" ]]; then
-    fail "Missing file: ${file}"
-    exit 1
-  fi
+    if [[ ! -f "${file}" ]]; then
+        fail "Missing file: ${file}"
+        exit 1
+    fi
 
-  success "Found ${file}"
-
-done
-
-# =========================================================
-# Validate manifests
-# =========================================================
-
-CURRENT_STEP="validating Kubernetes manifests"
-
-log "Validating manifests..."
-
-for file in "${FILES[@]}"; do
-
-  if ! kubectl apply \
-      --dry-run=server \
-      -f "${file}" >/dev/null; then
-
-    fail "Invalid Kubernetes manifest: ${file}"
-    exit 1
-
-  fi
-
-  success "Validated ${file}"
+    success "Found ${file}"
 
 done
 
 # =========================================================
-# 1. Namespace
+# 4. Create Namespace FIRST
+# =========================================================
+#
+# IMPORTANT:
+# Namespaced resources cannot be server-side validated
+# before the namespace exists.
+#
 # =========================================================
 
 CURRENT_STEP="creating namespace"
@@ -194,19 +184,54 @@ kubectl apply -f namespace.yaml
 if kubectl wait \
     --for=jsonpath='{.status.phase}'=Active \
     "namespace/${NAMESPACE}" \
-    --timeout=60s >/dev/null 2>&1; then
+    --timeout=60s >/dev/null 2>&1
+then
 
-  success "Namespace ${NAMESPACE} is ready."
+    success "Namespace ${NAMESPACE} is ready."
 
 else
 
-  fail "Namespace ${NAMESPACE} did not become ready."
-  exit 1
+    fail "Namespace ${NAMESPACE} did not become ready."
+    exit 1
 
 fi
 
 # =========================================================
-# 2. Database PVC
+# 5. Validate Remaining Manifests
+# =========================================================
+
+CURRENT_STEP="validating Kubernetes manifests"
+
+log "Validating manifests..."
+
+VALIDATION_FILES=(
+    "database-pvc.yaml"
+    "database-deployment.yaml"
+    "database-service.yaml"
+    "backend-deployment.yaml"
+    "backend-service.yaml"
+    "frontend-deployment.yaml"
+    "frontend-service.yaml"
+    "ingress.yaml"
+)
+
+for file in "${VALIDATION_FILES[@]}"; do
+
+    if ! kubectl apply \
+        --dry-run=server \
+        -f "${file}" >/dev/null
+    then
+
+        fail "Invalid Kubernetes manifest: ${file}"
+        exit 1
+    fi
+
+    success "Validated ${file}"
+
+done
+
+# =========================================================
+# 6. Database PVC
 # =========================================================
 
 CURRENT_STEP="creating database PVC"
@@ -219,44 +244,56 @@ success "Database PVC created/updated."
 
 log "Waiting for database PVC..."
 
+PVC_READY=false
+
 for i in {1..60}; do
 
-  PVC_STATUS=$(
-    kubectl get pvc database-pvc \
-      -n "${NAMESPACE}" \
-      -o jsonpath='{.status.phase}' \
-      2>/dev/null || true
-  )
+    PVC_STATUS=$(
+        kubectl get pvc database-pvc \
+            -n "${NAMESPACE}" \
+            -o jsonpath='{.status.phase}' \
+            2>/dev/null || true
+    )
 
-  if [[ "${PVC_STATUS}" == "Bound" ]]; then
-    success "Database PVC is Bound."
-    break
-  fi
+    if [[ "${PVC_STATUS}" == "Bound" ]]; then
 
-  if [[ "${PVC_STATUS}" == "Lost" ]]; then
-    fail "Database PVC entered Lost state."
-    exit 1
-  fi
+        success "Database PVC is Bound."
+        PVC_READY=true
+        break
 
-  echo "  PVC status: ${PVC_STATUS:-Pending}"
+    fi
 
-  sleep 2
+    if [[ "${PVC_STATUS}" == "Lost" ]]; then
 
-  if [[ "${i}" == "60" ]]; then
+        fail "Database PVC entered Lost state."
+
+        kubectl describe pvc \
+            database-pvc \
+            -n "${NAMESPACE}" || true
+
+        exit 1
+    fi
+
+    echo "  PVC status: ${PVC_STATUS:-Pending}"
+
+    sleep 2
+
+done
+
+if [[ "${PVC_READY}" != true ]]; then
 
     fail "Database PVC did not become Bound within 120 seconds."
 
     kubectl describe pvc \
-      database-pvc \
-      -n "${NAMESPACE}" || true
+        database-pvc \
+        -n "${NAMESPACE}" || true
 
     exit 1
-  fi
 
-done
+fi
 
 # =========================================================
-# 3. Database Deployment
+# 7. Database Deployment
 # =========================================================
 
 CURRENT_STEP="deploying database"
@@ -268,14 +305,14 @@ kubectl apply -f database-deployment.yaml
 log "Waiting for database rollout..."
 
 kubectl rollout status \
-  deployment/database \
-  -n "${NAMESPACE}" \
-  --timeout=180s
+    deployment/database \
+    -n "${NAMESPACE}" \
+    --timeout=180s
 
 success "Database is ready."
 
 # =========================================================
-# 4. Database Service
+# 8. Database Service
 # =========================================================
 
 CURRENT_STEP="creating database service"
@@ -287,7 +324,7 @@ kubectl apply -f database-service.yaml
 success "Database service is ready."
 
 # =========================================================
-# 5. Backend Deployment
+# 9. Backend Deployment
 # =========================================================
 
 CURRENT_STEP="deploying backend"
@@ -299,14 +336,14 @@ kubectl apply -f backend-deployment.yaml
 log "Waiting for backend rollout..."
 
 kubectl rollout status \
-  deployment/backend \
-  -n "${NAMESPACE}" \
-  --timeout=180s
+    deployment/backend \
+    -n "${NAMESPACE}" \
+    --timeout=180s
 
 success "Backend is ready."
 
 # =========================================================
-# 6. Backend Service
+# 10. Backend Service
 # =========================================================
 
 CURRENT_STEP="creating backend service"
@@ -318,7 +355,7 @@ kubectl apply -f backend-service.yaml
 success "Backend service is ready."
 
 # =========================================================
-# 7. Frontend Deployment
+# 11. Frontend Deployment
 # =========================================================
 
 CURRENT_STEP="deploying frontend"
@@ -330,14 +367,14 @@ kubectl apply -f frontend-deployment.yaml
 log "Waiting for frontend rollout..."
 
 kubectl rollout status \
-  deployment/frontend \
-  -n "${NAMESPACE}" \
-  --timeout=180s
+    deployment/frontend \
+    -n "${NAMESPACE}" \
+    --timeout=180s
 
 success "Frontend is ready."
 
 # =========================================================
-# 8. Frontend Service
+# 12. Frontend Service
 # =========================================================
 
 CURRENT_STEP="creating frontend service"
@@ -349,7 +386,7 @@ kubectl apply -f frontend-service.yaml
 success "Frontend service is ready."
 
 # =========================================================
-# 9. Ingress
+# 13. Ingress
 # =========================================================
 
 CURRENT_STEP="creating ingress"
@@ -361,7 +398,7 @@ kubectl apply -f ingress.yaml
 success "Ingress is created."
 
 # =========================================================
-# Final Status
+# 14. Final Status
 # =========================================================
 
 echo
@@ -376,23 +413,23 @@ kubectl get namespace "${NAMESPACE}"
 echo
 echo "Pods:"
 kubectl get pods \
-  -n "${NAMESPACE}" \
-  -o wide
+    -n "${NAMESPACE}" \
+    -o wide
 
 echo
 echo "Services:"
 kubectl get svc \
-  -n "${NAMESPACE}"
+    -n "${NAMESPACE}"
 
 echo
 echo "PVC:"
 kubectl get pvc \
-  -n "${NAMESPACE}"
+    -n "${NAMESPACE}"
 
 echo
 echo "Ingress:"
 kubectl get ingress \
-  -n "${NAMESPACE}"
+    -n "${NAMESPACE}"
 
 echo
 success "HireFlow deployment completed successfully."
