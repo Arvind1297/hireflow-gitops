@@ -325,13 +325,13 @@ success "Frontend service is ready."
 # 9. Ingress
 # =========================================================
 
-CURRENT_STEP="creating frontend ingress"
+CURRENT_STEP="creating  ingress"
 
-log "Creating frontend ingress..."
+log "Creating  ingress..."
 
-kubectl apply -f frontend-ingress.yaml
+kubectl apply -f ingress.yaml
 
-success "Frontend ingress is created."
+success "ingress is created."
 
 # =========================================================
 # Final Status
