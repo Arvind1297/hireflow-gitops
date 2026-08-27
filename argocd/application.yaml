@@ -11,7 +11,7 @@ spec:
   source:
     repoURL: https://github.com/DEVENDRA-5470/hireflow-gitops.git
     targetRevision: main
-    path: .
+    path: k8s
 
   destination:
     server: https://kubernetes.default.svc

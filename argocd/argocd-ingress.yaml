@@ -1,26 +1,23 @@
-apiVersion: argoproj.io/v1alpha1
-kind: Application
+apiVersion: networking.k8s.io/v1
+kind: Ingress
 
 metadata:
-  name: hireflow
+  name: argocd-ingress
   namespace: argocd
 
+  annotations:
+    nginx.ingress.kubernetes.io/backend-protocol: "HTTPS"
+
 spec:
-  project: default
+  ingressClassName: nginx
 
-  source:
-    repoURL: https://github.com/DEVENDRA-5470/hireflow-gitops.git
-    targetRevision: main
-    path: k8s
-
-  destination:
-    server: https://kubernetes.default.svc
-    namespace: hireflow
-
-  syncPolicy:
-    automated:
-      prune: true
-      selfHeal: true
-
-    syncOptions:
-      - CreateNamespace=false
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: argocd-server
+                port:
+                  number: 443
