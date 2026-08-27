@@ -6,6 +6,7 @@ NAMESPACE="argocd"
 CONTROLLER_NODE="controller"
 ARGOCD_MANIFEST="https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml"
 TIMEOUT="300s"
+RESOURCE_TIMEOUT_SECONDS=180
 
 ARGOCD_DEPLOYMENTS=(
   "argocd-server"
@@ -15,6 +16,8 @@ ARGOCD_DEPLOYMENTS=(
   "argocd-applicationset-controller"
   "argocd-redis"
 )
+
+ARGOCD_STATEFULSET="argocd-application-controller"
 
 RED="\033[0;31m"
 GREEN="\033[0;32m"
@@ -46,41 +49,68 @@ info() {
 }
 
 diagnostics() {
+  local exit_code=$?
+
   echo
   echo "============================================================"
   echo "INSTALLATION FAILED - DIAGNOSTICS"
   echo "============================================================"
 
-  echo
-  echo "Argo CD Pods:"
-  kubectl get pods -n "${NAMESPACE}" -o wide 2>/dev/null || true
+  if kubectl get namespace "${NAMESPACE}" >/dev/null 2>&1; then
 
-  echo
-  echo "Argo CD Deployments:"
-  kubectl get deployments -n "${NAMESPACE}" 2>/dev/null || true
+    echo
+    echo "Argo CD Pods:"
+    kubectl get pods -n "${NAMESPACE}" -o wide 2>/dev/null || true
 
-  echo
-  echo "Argo CD StatefulSets:"
-  kubectl get statefulsets -n "${NAMESPACE}" 2>/dev/null || true
+    echo
+    echo "Argo CD Deployments:"
+    kubectl get deployments -n "${NAMESPACE}" 2>/dev/null || true
 
-  echo
-  echo "Recent Argo CD Events:"
-  kubectl get events \
-    -n "${NAMESPACE}" \
-    --sort-by='.lastTimestamp' \
-    2>/dev/null | tail -30 || true
+    echo
+    echo "Argo CD StatefulSets:"
+    kubectl get statefulsets -n "${NAMESPACE}" 2>/dev/null || true
 
-  echo
-  echo "Pending Pods:"
+    echo
+    echo "Recent Argo CD Events:"
+    kubectl get events \
+      -n "${NAMESPACE}" \
+      --sort-by='.lastTimestamp' \
+      2>/dev/null | tail -40 || true
 
-  kubectl get pods \
-    -n "${NAMESPACE}" \
-    --field-selector=status.phase=Pending \
-    -o wide \
-    2>/dev/null || true
+    echo
+    echo "Non-Running Pods:"
+    kubectl get pods \
+      -n "${NAMESPACE}" \
+      --no-headers 2>/dev/null \
+      | awk '$3 != "Running" && $3 != "Completed" {print}' || true
+
+  fi
+
+  exit "${exit_code}"
 }
 
 trap diagnostics ERR
+
+wait_for_resource() {
+  local resource_type="$1"
+  local resource_name="$2"
+  local namespace="$3"
+  local elapsed=0
+
+  while ! kubectl get "${resource_type}" "${resource_name}" \
+    -n "${namespace}" >/dev/null 2>&1
+  do
+
+    if [[ "${elapsed}" -ge "${RESOURCE_TIMEOUT_SECONDS}" ]]; then
+      error "Timed out waiting for ${resource_type}/${resource_name}"
+      return 1
+    fi
+
+    sleep 2
+    elapsed=$((elapsed + 2))
+
+  done
+}
 
 header "Checking Required Commands"
 
@@ -93,28 +123,25 @@ success "kubectl found"
 
 if ! command -v base64 >/dev/null 2>&1; then
   warning "base64 command not found."
-  warning "Password decoding command may differ on your system."
 else
   success "base64 found"
 fi
 
 header "Checking Kubernetes Cluster Connection"
 
-if ! kubectl cluster-info >/dev/null 2>&1; then
-  error "Cannot connect to Kubernetes cluster."
-  error "Check kubeconfig and cluster status."
-  exit 1
-fi
+kubectl cluster-info >/dev/null
 
 success "Kubernetes cluster connection successful"
 
 header "Checking Controller Node"
 
 if ! kubectl get node "${CONTROLLER_NODE}" >/dev/null 2>&1; then
+
   error "Controller node '${CONTROLLER_NODE}' does not exist."
 
   echo
   echo "Available nodes:"
+
   kubectl get nodes
 
   exit 1
@@ -130,21 +157,23 @@ NODE_HOSTNAME=$(
 )
 
 if [[ -z "${NODE_HOSTNAME}" ]]; then
+
   error "Node does not have kubernetes.io/hostname label."
-  kubectl get node "${CONTROLLER_NODE}" --show-labels
+
+  kubectl get node \
+    "${CONTROLLER_NODE}" \
+    --show-labels
+
   exit 1
 fi
 
 if [[ "${NODE_HOSTNAME}" != "${CONTROLLER_NODE}" ]]; then
+
   error "Controller hostname label mismatch."
 
   echo
-  echo "Expected node:"
-  echo "${CONTROLLER_NODE}"
-
-  echo
-  echo "Actual hostname label:"
-  echo "${NODE_HOSTNAME}"
+  echo "Expected: ${CONTROLLER_NODE}"
+  echo "Actual:   ${NODE_HOSTNAME}"
 
   exit 1
 fi
@@ -153,13 +182,9 @@ success "Controller hostname label verified"
 
 header "Checking Controller Node Taints"
 
-CONTROLLER_TAINTS=$(
-  kubectl get node "${CONTROLLER_NODE}" \
-    -o jsonpath='{.spec.taints[*].key}' 2>/dev/null || true
-)
-
-echo "Detected taints:"
-echo "${CONTROLLER_TAINTS:-None}"
+kubectl get node "${CONTROLLER_NODE}" \
+  -o jsonpath='{range .spec.taints[*]}{.key}={.value}:{.effect}{"\n"}{end}' \
+  2>/dev/null || true
 
 header "Creating Argo CD Namespace"
 
@@ -169,49 +194,7 @@ kubectl create namespace "${NAMESPACE}" \
 
 success "Namespace ready: ${NAMESPACE}"
 
-header "Checking Existing Argo CD Installation"
-
-EXISTING_RESOURCES=$(
-  kubectl get deployments,statefulsets \
-    -n "${NAMESPACE}" \
-    --no-headers \
-    2>/dev/null || true
-)
-
-if [[ -n "${EXISTING_RESOURCES}" ]]; then
-  warning "Existing Argo CD workloads detected."
-  kubectl get deployments,statefulsets -n "${NAMESPACE}"
-else
-  success "No existing workloads detected"
-fi
-
-header "Checking Argo CD CRDs"
-
-if kubectl get crd applicationsets.argoproj.io >/dev/null 2>&1; then
-
-  CRD_SIZE=$(
-    kubectl get crd applicationsets.argoproj.io \
-      -o jsonpath='{.metadata.annotations.kubectl\.kubernetes\.io/last-applied-configuration}' \
-      2>/dev/null | wc -c
-  )
-
-  if [[ "${CRD_SIZE}" -gt 200000 ]]; then
-    warning "Large last-applied annotation detected."
-    warning "Removing problematic ApplicationSet CRD."
-
-    kubectl delete crd applicationsets.argoproj.io \
-      --ignore-not-found
-  else
-    success "ApplicationSet CRD does not contain oversized annotation"
-  fi
-
-else
-  success "ApplicationSet CRD does not exist yet"
-fi
-
 header "Installing Argo CD"
-
-info "Using server-side apply"
 
 kubectl apply \
   --server-side \
@@ -227,26 +210,21 @@ for deployment in "${ARGOCD_DEPLOYMENTS[@]}"; do
 
   info "Waiting for deployment/${deployment}"
 
-  until kubectl get deployment "${deployment}" \
-    -n "${NAMESPACE}" \
-    >/dev/null 2>&1
-  do
-    sleep 2
-  done
+  wait_for_resource \
+    "deployment" \
+    "${deployment}" \
+    "${NAMESPACE}"
 
 done
 
 success "All Argo CD deployments created"
 
-header "Waiting for Argo CD Application Controller"
+header "Waiting for Application Controller"
 
-until kubectl get statefulset \
-  argocd-application-controller \
-  -n "${NAMESPACE}" \
-  >/dev/null 2>&1
-do
-  sleep 2
-done
+wait_for_resource \
+  "statefulset" \
+  "${ARGOCD_STATEFULSET}" \
+  "${NAMESPACE}"
 
 success "Application controller created"
 
@@ -262,7 +240,9 @@ PATCH=$(cat <<EOF
         },
         "tolerations": [
           {
-            "operator": "Exists"
+            "key": "node-role.kubernetes.io/control-plane",
+            "operator": "Exists",
+            "effect": "NoSchedule"
           }
         ]
       }
@@ -291,7 +271,7 @@ success "Deployments patched"
 header "Scheduling Application Controller on Controller"
 
 kubectl patch statefulset \
-  argocd-application-controller \
+  "${ARGOCD_STATEFULSET}" \
   -n "${NAMESPACE}" \
   --type=merge \
   -p "${PATCH}"
@@ -316,11 +296,43 @@ success "All Argo CD deployments are ready"
 header "Waiting for Application Controller"
 
 kubectl rollout status \
-  statefulset/argocd-application-controller \
+  statefulset/"${ARGOCD_STATEFULSET}" \
   -n "${NAMESPACE}" \
   --timeout="${TIMEOUT}"
 
 success "Application controller is ready"
+
+header "Waiting for Old Pods to Terminate"
+
+ELAPSED=0
+
+while true; do
+
+  TERMINATING_PODS=$(
+    kubectl get pods \
+      -n "${NAMESPACE}" \
+      --no-headers 2>/dev/null \
+      | awk '$3 == "Terminating" {print $1}'
+  )
+
+  if [[ -z "${TERMINATING_PODS}" ]]; then
+    success "No terminating Argo CD pods remaining"
+    break
+  fi
+
+  if [[ "${ELAPSED}" -ge "${RESOURCE_TIMEOUT_SECONDS}" ]]; then
+    warning "Some old pods are still terminating:"
+    echo "${TERMINATING_PODS}"
+    break
+  fi
+
+  info "Waiting for old terminating pods to disappear..."
+
+  sleep 2
+
+  ELAPSED=$((ELAPSED + 2))
+
+done
 
 header "Argo CD Pod Status"
 
@@ -328,47 +340,85 @@ kubectl get pods \
   -n "${NAMESPACE}" \
   -o wide
 
-header "Verifying Pod Placement"
+header "Verifying Running Pod Placement"
 
 BAD_PODS=0
 
-while read -r POD NODE; do
+while read -r POD NODE PHASE; do
+
+  [[ -z "${POD}" ]] && continue
+
+  if [[ "${PHASE}" != "Running" ]]; then
+    continue
+  fi
 
   if [[ "${NODE}" != "${CONTROLLER_NODE}" ]]; then
-    warning "Pod ${POD} is running on ${NODE}, expected ${CONTROLLER_NODE}"
+
+    warning \
+      "Running pod ${POD} is on ${NODE}, expected ${CONTROLLER_NODE}"
+
     BAD_PODS=1
   fi
 
 done < <(
   kubectl get pods \
     -n "${NAMESPACE}" \
-    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.nodeName}{"\n"}{end}'
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.nodeName}{" "}{.status.phase}{"\n"}{end}'
 )
 
-if [[ "${BAD_PODS}" -eq 1 ]]; then
-  error "Some Argo CD pods are not running on the controller."
-  kubectl get pods -n "${NAMESPACE}" -o wide
+if [[ "${BAD_PODS}" -ne 0 ]]; then
+
+  error "Some running Argo CD pods are not running on the controller."
+
+  kubectl get pods \
+    -n "${NAMESPACE}" \
+    -o wide
+
   exit 1
 fi
 
-success "All Argo CD pods are running on controller"
+success "All running Argo CD pods are on controller"
 
-header "Verifying Pod Readiness"
+header "Verifying Running Pod Readiness"
 
-NOT_READY=$(
+NOT_READY=""
+
+while read -r POD READY; do
+
+  [[ -z "${POD}" ]] && continue
+
+  if [[ "${READY}" != "true" ]]; then
+    NOT_READY="${NOT_READY}${POD}=${READY}"$'\n'
+  fi
+
+done < <(
   kubectl get pods \
     -n "${NAMESPACE}" \
-    -o jsonpath='{range .items[*]}{.metadata.name}{"="}{range .status.containerStatuses[*]}{.ready}{" "}{end}{"\n"}{end}' \
-    | grep "false" || true
+    --field-selector=status.phase=Running \
+    -o jsonpath='{range .items[*]}{.metadata.name}{" "}{range .status.containerStatuses[*]}{.ready}{" "}{end}{"\n"}{end}' \
+  | awk '
+      {
+        ready="true"
+        for (i=2; i<=NF; i++) {
+          if ($i != "true") {
+            ready="false"
+          }
+        }
+        print $1, ready
+      }
+    '
 )
 
 if [[ -n "${NOT_READY}" ]]; then
-  error "Some Argo CD containers are not ready."
-  echo "${NOT_READY}"
+
+  error "Some running Argo CD pods are not ready."
+
+  printf "%s" "${NOT_READY}"
+
   exit 1
 fi
 
-success "All Argo CD containers are ready"
+success "All running Argo CD pods are ready"
 
 header "Argo CD Installation Completed Successfully"
 
@@ -382,19 +432,21 @@ echo "Argo CD UI Access"
 echo "============================================================"
 
 echo
-echo "Run this command on the controller:"
+echo "Run on the controller:"
 echo
 
 echo "kubectl port-forward svc/argocd-server -n argocd 8080:443"
 
 echo
-echo "Then open:"
+echo "Open:"
 echo
+
 echo "https://localhost:8080"
 
 echo
 echo "Username:"
 echo
+
 echo "admin"
 
 echo
