@@ -432,28 +432,53 @@ echo "Argo CD UI Access"
 echo "============================================================"
 
 echo
-echo "Run on the controller:"
+echo "STEP 1: On the Kubernetes controller, start Argo CD port-forward:"
 echo
 
-echo "kubectl port-forward svc/argocd-server -n argocd 8080:443"
+echo "kubectl port-forward svc/argocd-server -n argocd 8443:443"
 
 echo
-echo "Open:"
-echo
+echo "Keep this terminal OPEN."
+echo "Do not stop the port-forward process."
 
-echo "https://localhost:8080"
+echo
+echo "============================================================"
+echo "STEP 2: On your LOCAL machine, create an SSH tunnel:"
+echo "============================================================"
+
+echo
+echo "ssh -L 8443:127.0.0.1:8443 \\"
+echo "  -i ~/.ssh/id_ed25519 \\"
+echo "  azureuser@20.39.61.124"
+
+echo
+echo "Keep this SSH connection OPEN."
+
+echo
+echo "============================================================"
+echo "STEP 3: Open Argo CD in your LOCAL browser:"
+echo "============================================================"
+
+echo
+echo "https://localhost:8443"
+
+echo
+echo "============================================================"
+echo "LOGIN"
+echo "============================================================"
 
 echo
 echo "Username:"
-echo
-
 echo "admin"
 
 echo
-echo "Initial password:"
+echo "Initial password command:"
 echo
 
 echo "kubectl -n argocd get secret argocd-initial-admin-secret \\"
 echo "  -o jsonpath=\"{.data.password}\" | base64 -d"
 
 echo
+echo "============================================================"
+echo "ARGOCD DONE "
+echo "============================================================"
