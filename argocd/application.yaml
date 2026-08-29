@@ -9,7 +9,7 @@ spec:
   project: default
 
   source:
-    repoURL: https://github.com/Arvind1297/hireflow-with-argocd.git
+    repoURL: https://github.com/Arvind1297/hireflow-gitops.git
     targetRevision: main
     path: k8s
 
