@@ -19,7 +19,7 @@ spec:
     spec:
       containers:
         - name: frontend
-          image: ghcr.io/manaskosht/hireflow-frontend:build-16
+          image: ghcr.io/manaskosht/hireflow-frontend:build-17
           imagePullPolicy: IfNotPresent
 
           ports:
